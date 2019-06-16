@@ -5,6 +5,9 @@ import shutil
 import os, json, sys, tempfile
 from baidupcsapi import PCS
 
+reload(sys)
+sys.setdefaultencoding("utf-8")
+
 # 本脚本会把local_root_dir目录下的will_upload_paths文件同步到网盘的target_dir目录中, 且自动新建目录
 
 
@@ -72,7 +75,8 @@ def normal_upload(file_full_path, target_dir):
                              callback=ProgressBar())
             content = json.loads(ret.content)
             if (content.has_key('md5')):
-                return Result(success=True, data=content)
+                return Result(success=True, data=content,
+                              message='normal_upload success, file_full_path: %s' % file_full_path)
             else:
                 return Result(success=False, error=content,
                               message='normal_upload error, file_full_path: %s' % file_full_path)
@@ -89,7 +93,8 @@ def rapid_upload(file_full_path, target_dir):
             ret = pcs.rapidupload(file, target_dir + '/' + os.path.basename(file_full_path))
             content = json.loads(ret.content)
             if (content['errno'] == 0 or content['errno'] == -8):
-                return Result(success=True, data=content)
+                return Result(success=True, data=content,
+                              message='rapid_upload success, file_full_path: %s' % file_full_path)
             else:
                 return Result(success=False, error=content,
                               message='rapid_upload error, file_full_path: %s' % file_full_path)
@@ -127,7 +132,8 @@ def large_file_upload(file_full_path, target_dir):
         ret = pcs.upload_superfile(target_dir + '/' + os.path.basename(file_full_path), md5list)
         content = json.loads(ret.content)
         if (content.has_key('md5')):
-            return Result(success=True, data=content)
+            return Result(success=True, data=content,
+                          message='large_file_upload success, file_full_path: %s' % file_full_path)
         else:
             return Result(success=False, error=content,
                           message='large_file_upload error, file_full_path: %s' % file_full_path)
@@ -186,7 +192,7 @@ def done_uploader_callback(future):
             f.write(result.message + '\n')
     else:
         with open(error_log_file, 'a+') as f:
-            f.write(result.message + '\n')
+            f.write(result.message + '. error: %s\n' % result.error)
 
 
 def main():
