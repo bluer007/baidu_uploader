@@ -1,0 +1,5 @@
+.idea/
+*.iml
+error.txt
+success.txt
+*.cookies
