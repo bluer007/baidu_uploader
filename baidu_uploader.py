@@ -16,8 +16,7 @@ password = ''
 # 能同时上传多少文件
 max_uploader = 5
 # 指定即将上传的文件/目录的全路径数组, 优先使用外部传进来的文件路径参数
-will_upload_paths = (sys.argv[1:]) if len(sys.argv) > 1 \
-    else [
+will_upload_paths = (sys.argv[1:]) if len(sys.argv) > 1 else [
     unicode('D:/123', 'utf-8'),
 ]
 # 本地的根目录全路径(末尾不带/或\分隔符)
