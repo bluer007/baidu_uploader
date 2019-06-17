@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 
+import time
 import concurrent.futures
 import progressbar
 from baidupcsapi import PCS
@@ -34,6 +35,8 @@ target_dir = '/test'
 error_log_file = './error.txt'
 # 成功日志文件(记录上传成功的文件路径)
 success_log_file = './success.txt'
+# 进度条更新频率(秒), 建议任务很多时, 设大一点, 避免频繁刷新进度导致看不清
+bar_update_interval = 5
 
 pcs = PCS(user, password)  # 登录百度网盘
 local_root_dir = local_root_dir.replace('\\', '/')  # 统一处理文件路径分隔符
@@ -50,7 +53,7 @@ class ProgressBar():
 
     def __call__(self, *args, **kwargs):
         if self.first_call:
-            self.widgets = [self.file_full_path, ' |', progressbar.Percentage(), ' ',
+            self.widgets = ['\n' + self.file_full_path, ' |', progressbar.Percentage(), ' ',
                             progressbar.Bar(marker=progressbar.RotatingMarker('>')),
                             ' ', progressbar.ETA()]
             self.pbar = progressbar.ProgressBar(widgets=self.widgets, maxval=kwargs['size']).start()
@@ -59,7 +62,9 @@ class ProgressBar():
         if kwargs['size'] <= kwargs['progress']:
             self.pbar.finish()
         else:
-            self.pbar.update(kwargs['progress'])
+            last_interval = time.time() - self.pbar.last_update_time
+            if (last_interval >= bar_update_interval):
+                self.pbar.update(kwargs['progress'])
 
 
 # 打印对象下的属性值
@@ -79,7 +84,6 @@ class Result():
 def normal_upload(file_full_path, target_dir):
     try:
         with open(file_full_path, 'rb') as file:
-            print('start upload [ %s ]...\n' % (file_full_path))
             ret = pcs.upload(target_dir, file, os.path.basename(file_full_path),
                              callback=ProgressBar(file_full_path))
             content = json.loads(ret.content)
@@ -102,7 +106,6 @@ def normal_upload(file_full_path, target_dir):
 def rapid_upload(file_full_path, target_dir):
     try:
         with open(file_full_path, 'rb') as file:
-            print('start upload [ %s ]...\n' % (file_full_path))
             ret = pcs.rapidupload(file, target_dir + '/' + os.path.basename(file_full_path))
             content = json.loads(ret.content)
             if (content['errno'] == 0 or content['errno'] == -8):
@@ -126,7 +129,6 @@ def large_file_upload(file_full_path, target_dir):
         fid = 1
         md5list = []
         tmpdir = tempfile.mkdtemp('baidu_uploader')
-        print('start upload [ %s ]...\n' % (file_full_path))
         with open(file_full_path, 'rb') as infile:
             while 1:
                 data = infile.read(chinksize)
@@ -168,6 +170,7 @@ def large_file_upload(file_full_path, target_dir):
 # 把file_full_path文件上传到网盘target_dir目录
 def smart_upload(file_full_path, target_dir):
     try:
+        print('%s :start upload...\n' % (file_full_path))
         LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
         result = rapid_upload(file_full_path, target_dir)
         if (result.success == False):
@@ -212,6 +215,7 @@ def done_uploader_callback(future):
         with open(success_log_file, 'a+') as f:
             f.write(result.message + '\n')
     else:
+        print (result.message + '. error: %s\n' % result.error)
         with open(error_log_file, 'a+') as f:
             f.write(result.message + '. error: %s\n' % result.error)
 
