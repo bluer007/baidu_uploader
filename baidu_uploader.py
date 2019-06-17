@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
+import json
+import os
+import shutil
+import sys
+import tempfile
+
 import concurrent.futures
 import progressbar
-import shutil
-import os, json, sys, tempfile
 from baidupcsapi import PCS
 
 reload(sys)
@@ -12,9 +16,9 @@ sys.setdefaultencoding("utf-8")
 
 
 # 网盘账号
-user = ''
+user = '' or raw_input('请输入用户名:')
 # 网盘密码
-password = ''
+password = '' or raw_input('请输入密码:')
 
 # 能同时上传多少文件
 max_uploader = 5
@@ -33,16 +37,21 @@ success_log_file = './success.txt'
 
 pcs = PCS(user, password)  # 登录百度网盘
 local_root_dir = local_root_dir.replace('\\', '/')  # 统一处理文件路径分隔符
+thread_pool = None  # 线程池
 
 
 # 进度条类
 class ProgressBar():
-    def __init__(self):
+    file_full_path = ''
+
+    def __init__(self, file_full_path):
         self.first_call = True
+        self.file_full_path = file_full_path
 
     def __call__(self, *args, **kwargs):
         if self.first_call:
-            self.widgets = [progressbar.Percentage(), ' ', progressbar.Bar(marker=progressbar.RotatingMarker('>')),
+            self.widgets = [self.file_full_path, ' |', progressbar.Percentage(), ' ',
+                            progressbar.Bar(marker=progressbar.RotatingMarker('>')),
                             ' ', progressbar.ETA()]
             self.pbar = progressbar.ProgressBar(widgets=self.widgets, maxval=kwargs['size']).start()
             self.first_call = False
@@ -72,7 +81,7 @@ def normal_upload(file_full_path, target_dir):
         with open(file_full_path, 'rb') as file:
             print('start upload [ %s ]...\n' % (file_full_path))
             ret = pcs.upload(target_dir, file, os.path.basename(file_full_path),
-                             callback=ProgressBar())
+                             callback=ProgressBar(file_full_path))
             content = json.loads(ret.content)
             if (content.has_key('md5')):
                 return Result(success=True, data=content,
@@ -80,7 +89,11 @@ def normal_upload(file_full_path, target_dir):
             else:
                 return Result(success=False, error=content,
                               message='normal_upload error, file_full_path: %s' % file_full_path)
-    except BaseException as e:
+    except KeyboardInterrupt:
+        print("normal_upload stopped by hand")
+        thread_pool.shutdown(False)
+        os._exit(1)
+    except Exception as e:
         return Result(success=False, error=e,
                       message='normal_upload unknown error, file_full_path: %s' % file_full_path)
 
@@ -98,7 +111,11 @@ def rapid_upload(file_full_path, target_dir):
             else:
                 return Result(success=False, error=content,
                               message='rapid_upload error, file_full_path: %s' % file_full_path)
-    except BaseException as e:
+    except KeyboardInterrupt:
+        print("rapid_upload stopped by hand")
+        thread_pool.shutdown(False)
+        os._exit(1)
+    except Exception as e:
         return Result(success=False, error=e, message='rapid_upload unknown error, file_full_path: %s' % file_full_path)
 
 
@@ -119,7 +136,7 @@ def large_file_upload(file_full_path, target_dir):
                     f.write(data)
                 fid += 1
                 with open(smallfile, 'rb') as fsmall:
-                    ret = pcs.upload_tmpfile(fsmall, callback=ProgressBar())
+                    ret = pcs.upload_tmpfile(fsmall, callback=ProgressBar(file_full_path))
                     content = json.loads(ret.content)
                     if (content.has_key('md5')):
                         md5list.append(content['md5'])
@@ -137,7 +154,11 @@ def large_file_upload(file_full_path, target_dir):
         else:
             return Result(success=False, error=content,
                           message='large_file_upload error, file_full_path: %s' % file_full_path)
-    except BaseException as e:
+    except KeyboardInterrupt:
+        print("large_file_upload stopped by hand")
+        thread_pool.shutdown(False)
+        os._exit(1)
+    except Exception as e:
         shutil.rmtree(tmpdir, True)  # 递归删除文件夹
         return Result(success=False, error=e,
                       message='large_file_upload unknown error, file_full_path: %s' % file_full_path)
@@ -158,7 +179,7 @@ def smart_upload(file_full_path, target_dir):
                 result = large_file_upload(file_full_path, target_dir)
         return result
 
-    except BaseException as e:
+    except Exception as e:
         return Result(success=False, data=file_full_path, error='',
                       message='smart_upload unknown error, file_full_path: %s' % file_full_path)
 
@@ -198,6 +219,7 @@ def done_uploader_callback(future):
 def main():
     all_files_full_path = list_all_files_full_path(will_upload_paths)
     futures = set()
+    global thread_pool
     thread_pool = concurrent.futures.ThreadPoolExecutor(max_uploader, 'uploader')
     with thread_pool as executor:
         for file_full_path in all_files_full_path:
@@ -214,7 +236,14 @@ def main():
 
     except KeyboardInterrupt:
         print("stopped by hand")
+        thread_pool.shutdown(False)
+        os._exit(1)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("main() stopped by hand")
+        thread_pool.shutdown(False)
+        os._exit(1)
