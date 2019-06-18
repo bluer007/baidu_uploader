@@ -1,9 +1,9 @@
 # baidu_uploader
-  百度网盘上传助手, 突破客户端非会员单次最多上传500个文件和2G文件大小的限制
+  百度网盘上传助手, 突破客户端非会员单次最多上传500个文件和最大2G文件大小的限制
 
 ## Environment
 - Python 2.7+  
-- pip
+- pip ([https://pypi.org/project/pip/](https://pypi.org/project/pip/))
 
 ## Install 
 1. pip install futures progressbar baidupcsapi
