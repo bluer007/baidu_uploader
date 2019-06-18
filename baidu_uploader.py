@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
+import getpass
 import json
 import os
 import shutil
 import sys
 import tempfile
-
 import time
+
 import concurrent.futures
 import progressbar
 from baidupcsapi import PCS
@@ -19,7 +20,7 @@ sys.setdefaultencoding("utf-8")
 # 网盘账号
 user = '' or raw_input('请输入用户名:')
 # 网盘密码
-password = '' or raw_input('请输入密码:')
+password = '' or getpass.getpass('请输入密码:')
 
 # 能同时上传多少文件
 max_uploader = 5
@@ -109,6 +110,7 @@ def rapid_upload(file_full_path, target_dir):
             ret = pcs.rapidupload(file, target_dir + '/' + os.path.basename(file_full_path))
             content = json.loads(ret.content)
             if (content['errno'] == 0 or content['errno'] == -8):
+                print ('rapid_upload success, file_full_path: %s\n' % file_full_path)
                 return Result(success=True, data=content,
                               message='rapid_upload success, file_full_path: %s' % file_full_path)
             else:
@@ -170,7 +172,7 @@ def large_file_upload(file_full_path, target_dir):
 # 把file_full_path文件上传到网盘target_dir目录
 def smart_upload(file_full_path, target_dir):
     try:
-        print('%s :start upload...\n' % (file_full_path))
+        print('%s | start upload...\n' % (file_full_path))
         LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
         result = rapid_upload(file_full_path, target_dir)
         if (result.success == False):
