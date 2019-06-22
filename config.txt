@@ -1,0 +1,24 @@
+[config]
+# 网盘账号
+username = 
+
+# 网盘密码
+password = 
+
+# 默认上传的本地文件/目录全路径
+default_local_upload_path = D:\123\
+
+# 默认上传到的网盘目录, 根目录是/
+default_remote_dir = /baidu_uploader  
+
+# 能同时上传多少文件
+max_uploader = 5
+
+# 错误日志文件(记录上传失败的文件路径)
+error_log_file = ./error.txt
+
+# 成功日志文件(记录上传成功的文件路径), 不填表示成功上传时不输出日志文件
+success_log_file = ./success.txt
+
+# 进度条更新频率(N秒/次), 当任务很多时, 建议设大一点, 避免频繁刷新进度条导致看不清
+bar_update_interval = 5
