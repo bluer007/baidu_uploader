@@ -37,9 +37,9 @@ class Config():
         cf.read(config_file)
         section = 'config'
         # 网盘账号
-        self.username = unicode(cf.get(section, 'username') or raw_input('input username:'), 'utf-8')
+        self.username = cf.get(section, 'username') or raw_input('input username:')
         # 网盘密码
-        self.password = unicode(cf.get(section, 'password') or getpass.getpass('input password:'), 'utf-8')
+        self.password = cf.get(section, 'password') or getpass.getpass('input password:')
         # 默认上传的本地文件/目录全路径, 优先使用外部传进来的文件路径参数
         self.default_local_upload_path = unicode(cf.get(section, 'default_local_upload_path') or '', 'utf-8')
         # 默认上传到的远程目录
