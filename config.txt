@@ -1,9 +1,9 @@
 [config]
 # 网盘账号
-username = 
+username = 123456@qq.com
 
 # 网盘密码
-password = 
+password = abc123456
 
 # 默认上传的本地文件/目录全路径
 default_local_upload_path = D:\123\
