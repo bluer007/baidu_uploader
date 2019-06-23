@@ -15,8 +15,6 @@ from baidupcsapi import PCS
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
-# 本脚本会把local_root_dir目录下的will_upload_paths文件同步到网盘的target_dir目录中, 且自动新建目录
-
 # 配置文件读取路径
 config_file = './config.txt'
 
@@ -81,10 +79,9 @@ class BaiduUploader():
         with self.thread_pool as executor:
             for file_full_path in all_files_full_path:
                 remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
-                    self.config.local_root_dir, '',
-                    1)  # 该文件在网盘中的最终目录
-                future = executor.submit(smart_upload, self, file_full_path, remote_dst_dir)
-                future.add_done_callback(done_uploader_callback)
+                    self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
+                future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
+                future.add_done_callback(self.done_uploader_callback)
                 futures.add(future)
 
         for future in concurrent.futures.as_completed(futures):
@@ -214,26 +211,37 @@ class BaiduUploader():
             all_files_full_path.append(self.path_process(path))
         return all_files_full_path
 
+    # 智能上传文件, 会根据文件智能选择极速上传/普通上传/分片上传
+    # 把file_full_path文件上传到网盘target_dir目录
+    def smart_upload(self, file_full_path, target_dir):
+        try:
+            print('%s | start upload...\n' % (file_full_path))
+            LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
+            result = self.rapid_upload(file_full_path, target_dir)
+            if (result.success == False):
+                if (os.path.getsize(file_full_path) < LARGE_FILE_SIZE):
+                    result = self.normal_upload(file_full_path, target_dir)
+                    if (result.success == False):
+                        result = self.large_file_upload(file_full_path, target_dir)
+                else:
+                    result = self.large_file_upload(file_full_path, target_dir)
+            return result
 
-# 智能上传文件, 会根据文件智能选择极速上传/普通上传/分片上传
-# 把file_full_path文件上传到网盘target_dir目录
-def smart_upload(self_baidu_uploader, file_full_path, target_dir):
-    try:
-        print('%s | start upload...\n' % (file_full_path))
-        LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
-        result = self_baidu_uploader.rapid_upload(file_full_path, target_dir)
-        if (result.success == False):
-            if (os.path.getsize(file_full_path) < LARGE_FILE_SIZE):
-                result = self_baidu_uploader.normal_upload(file_full_path, target_dir)
-                if (result.success == False):
-                    result = self_baidu_uploader.large_file_upload(file_full_path, target_dir)
-            else:
-                result = self_baidu_uploader.large_file_upload(file_full_path, target_dir)
-        return result
+        except Exception as e:
+            return Result(success=False, data=file_full_path, error=e,
+                          message='smart_upload unknown error, file_full_path: %s' % file_full_path)
 
-    except Exception as e:
-        return Result(success=False, data=file_full_path, error=e,
-                      message='smart_upload unknown error, file_full_path: %s' % file_full_path)
+    # 上传线程完成执行后的回调
+    def done_uploader_callback(self, future):
+        result = future.result()
+        if (result.success == True):
+            if (success_log_file != ''):
+                with open(success_log_file, 'a+') as f:
+                    f.write(result.message + '\n')
+        else:
+            print (result.message + '. error: %s\n' % result.error)
+            with open(error_log_file, 'a+') as f:
+                f.write(result.message + '. error: %s\n' % result.error)
 
 
 def to_unicode(str_or_unicode, encode):
@@ -248,19 +256,6 @@ def my_raw_input(unicode_prompt=''):
     encode = 'gbk' if sys.platform.startswith('win') else 'utf-8'
     str = raw_input(unicode_prompt.encode(encode))
     return to_unicode(str, encode)
-
-
-# 上传线程完成执行后的回调
-def done_uploader_callback(future):
-    result = future.result()
-    if (result.success == True):
-        if (success_log_file != ''):
-            with open(success_log_file, 'a+') as f:
-                f.write(result.message + '\n')
-    else:
-        print (result.message + '. error: %s\n' % result.error)
-        with open(error_log_file, 'a+') as f:
-            f.write(result.message + '. error: %s\n' % result.error)
 
 
 # 进度条类
