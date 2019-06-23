@@ -115,8 +115,7 @@ class BaiduUploader():
 
         config.remote_dir = config.default_remote_dir
         answer = my_raw_input(u'Will upload to [ %s ] (Y / Other path):' % config.default_remote_dir)
-        config.remote_dir = self.path_process(
-            config.remote_dir if answer.strip() in ['y', 'Y', ''] else config.remote_dir)
+        config.remote_dir = self.path_process(config.remote_dir if answer.strip() in ['y', 'Y', ''] else answer)
 
     # 统一把路径中的\替换成/
     def path_process(self, path):
