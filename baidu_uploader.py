@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 import time
-
+from Queue import Queue
 import concurrent.futures
 import progressbar
 import ConfigParser
@@ -58,15 +58,24 @@ class Config():
         self.bar_update_interval = cf.getint(section, 'bar_update_interval') or 5
 
 
+# 记录文件上传的参数类
+class UploadConfig():
+    def __init__(self, file_full_path, remote_dst_dir):
+        self.file_full_path = file_full_path
+        self.remote_dst_dir = remote_dst_dir
+
+
 class BaiduUploader():
     thread_pool = None  # 线程池
     pcs = None  # 百度网盘上下文
     config = None  # 配置实例
+    file_queue = None  # 待上传文件的队列
 
     def login(self, config):
         self.pcs = PCS(config.username, config.password)
 
     def start_upload(self):
+        self.file_queue = Queue()
         self.config = Config()
         # 登录百度网盘
         self.login(self.config)
@@ -74,21 +83,37 @@ class BaiduUploader():
         self.validity_check(self.config)
 
         all_files_full_path = self.list_all_files_full_path(self.config.local_upload_path)
-        futures = set()
+        futures = []
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(self.config.max_uploader, 'uploader')
+        for file_full_path in all_files_full_path:
+            remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
+                self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
+            # 待上传文件入队列
+            self.file_queue.put(UploadConfig(file_full_path, remote_dst_dir))
         with self.thread_pool as executor:
             for file_full_path in all_files_full_path:
                 remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                     self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
                 future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
-                future.add_done_callback(self.done_uploader_callback)
-                futures.add(future)
+                if (len(future._done_callbacks) == 0):
+                    future.add_done_callback(self.done_uploader_callback)
+                futures.append(future)
+            while futures:
+                for future in concurrent.futures.as_completed(futures):
+                    futures.remove(future)
+                    err = future.exception()
+                    result = future.result()
+                    if (result.success != True or err is not None):
+                        upload_config = result.data
+                        # 如果上传出错则重新入队待上传文件队列
+                        self.file_queue.put(upload_config)
+                        new_future = executor.submit(self.smart_upload, upload_config.file_full_path,
+                                                     upload_config.remote_dst_dir)
+                        new_future.add_done_callback(self.done_uploader_callback)
+                        futures.append(new_future)
 
-        for future in concurrent.futures.as_completed(futures):
-            err = future.exception()
-            if err is not None:
-                raise err
-        concurrent.futures.wait(futures)
+        # 等待所有文件上传完毕
+        self.file_queue.join()
         print ('\n\n-------------- finish all upload --------------\n\n')
 
     # 配置合法性判断
@@ -126,13 +151,13 @@ class BaiduUploader():
                                       callback=ProgressBar(file_full_path, self.config))
                 content = json.loads(ret.content)
                 if (content.has_key('md5')):
-                    return Result(success=True, data=content,
+                    return Result(success=True, data=UploadConfig(file_full_path, target_dir),
                                   message='normal_upload success, file_full_path: %s' % file_full_path)
                 else:
-                    return Result(success=False, error=content,
+                    return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=content,
                                   message='normal_upload error, file_full_path: %s' % file_full_path)
         except Exception as e:
-            return Result(success=False, error=e,
+            return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=e,
                           message='normal_upload unknown error, file_full_path: %s' % file_full_path)
 
     # 极速上传
@@ -143,13 +168,13 @@ class BaiduUploader():
                 content = json.loads(ret.content)
                 if (content['errno'] == 0 or content['errno'] == -8):
                     print ('rapid_upload success, file_full_path: %s\n' % file_full_path)
-                    return Result(success=True, data=content,
+                    return Result(success=True, data=UploadConfig(file_full_path, target_dir),
                                   message='rapid_upload success, file_full_path: %s' % file_full_path)
                 else:
-                    return Result(success=False, error=content,
+                    return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=content,
                                   message='rapid_upload error, file_full_path: %s' % file_full_path)
         except Exception as e:
-            return Result(success=False, error=e,
+            return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=e,
                           message='rapid_upload unknown error, file_full_path: %s' % file_full_path)
 
     # 分片上传(一般针对大于2G的大文件上传)
@@ -181,14 +206,14 @@ class BaiduUploader():
             ret = self.pcs.upload_superfile(target_dir + '/' + os.path.basename(file_full_path), md5list)
             content = json.loads(ret.content)
             if (content.has_key('md5')):
-                return Result(success=True, data=content,
+                return Result(success=True, data=UploadConfig(file_full_path, target_dir),
                               message='large_file_upload success, file_full_path: %s' % file_full_path)
             else:
-                return Result(success=False, error=content,
+                return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=content,
                               message='large_file_upload error, file_full_path: %s' % file_full_path)
         except Exception as e:
             shutil.rmtree(tmpdir, True)  # 递归删除文件夹
-            return Result(success=False, error=e,
+            return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=e,
                           message='large_file_upload unknown error, file_full_path: %s' % file_full_path)
 
     # 遍历目录, 返回包含所有文件的数组
@@ -215,7 +240,8 @@ class BaiduUploader():
     # 把file_full_path文件上传到网盘target_dir目录
     def smart_upload(self, file_full_path, target_dir):
         try:
-            print('%s | start upload...\n' % (file_full_path))
+            upload_config = self.file_queue.get()
+            print('%s | start upload, and %d files left ...\n' % (file_full_path, self.file_queue.qsize()))
             LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
             result = self.rapid_upload(file_full_path, target_dir)
             if (result.success == False):
@@ -225,10 +251,12 @@ class BaiduUploader():
                         result = self.large_file_upload(file_full_path, target_dir)
                 else:
                     result = self.large_file_upload(file_full_path, target_dir)
+            self.file_queue.task_done()
             return result
 
         except Exception as e:
-            return Result(success=False, data=file_full_path, error=e,
+            self.file_queue.task_done()
+            return Result(success=False, data=UploadConfig(file_full_path, target_dir), error=e,
                           message='smart_upload unknown error, file_full_path: %s' % file_full_path)
 
     # 上传线程完成执行后的回调
@@ -239,7 +267,7 @@ class BaiduUploader():
                 with open(success_log_file, 'a+') as f:
                     f.write(result.message + '\n')
         else:
-            print (result.message + '. error: %s\n' % result.error)
+            print (result.message + '. done_uploader_callback error: %s\n' % result.error)
             with open(error_log_file, 'a+') as f:
                 f.write(result.message + '. error: %s\n' % result.error)
 
@@ -290,7 +318,7 @@ def prn_obj(obj):
 
 
 class Result():
-    def __init__(self, success, data='', error='', message=''):
+    def __init__(self, success, data=UploadConfig('', ''), error='', message=''):
         self.success = success
         self.data = data
         self.error = error
