@@ -9,7 +9,7 @@ password = abc123456
 default_local_upload_path = D:\123\
 
 # 默认上传到的网盘目录, 根目录是/
-default_remote_dir = /baidu_uploader  
+default_remote_dir = /baidu_uploader
 
 # 能同时上传多少文件
 max_uploader = 5
@@ -22,3 +22,6 @@ success_log_file = ./success.txt
 
 # 进度条更新频率(N秒/次), 当任务很多时, 建议设大一点, 避免频繁刷新进度条导致看不清
 bar_update_interval = 5
+
+# 错误重试次数
+retry_times = 2

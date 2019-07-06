@@ -56,6 +56,8 @@ class Config():
         self.success_log_file = unicode(cf.get(section, 'success_log_file') or '', 'utf-8')
         # 进度条更新频率(N秒/次), 当任务很多时, 建议设大一点, 避免频繁刷新进度条导致看不清
         self.bar_update_interval = cf.getint(section, 'bar_update_interval') or 5
+        # 错误重试次数
+        self.retry_times = cf.getint(section, 'retry_times') or 2
 
 
 # 记录文件上传的参数类
@@ -84,6 +86,7 @@ class BaiduUploader():
 
         all_files_full_path = self.list_all_files_full_path(self.config.local_upload_path)
         futures = []
+        retry_map = {}
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(self.config.max_uploader, 'uploader')
         for file_full_path in all_files_full_path:
             remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
@@ -105,12 +108,16 @@ class BaiduUploader():
                     result = future.result()
                     if (result.success != True or err is not None):
                         upload_config = result.data
-                        # 如果上传出错则重新入队待上传文件队列
-                        self.file_queue.put(upload_config)
-                        new_future = executor.submit(self.smart_upload, upload_config.file_full_path,
-                                                     upload_config.remote_dst_dir)
-                        new_future.add_done_callback(self.done_uploader_callback)
-                        futures.append(new_future)
+                        retry_key = "%s %s" % (upload_config.remote_dst_dir, upload_config.file_full_path)
+                        error_count = retry_map.get(retry_key, 0)
+                        if (error_count < self.config.retry_times):
+                            retry_map[retry_key] = error_count + 1
+                            # 如果上传出错则重新入队待上传文件队列(错误重试)
+                            self.file_queue.put(upload_config)
+                            new_future = executor.submit(self.smart_upload, upload_config.file_full_path,
+                                                         upload_config.remote_dst_dir)
+                            new_future.add_done_callback(self.done_uploader_callback)
+                            futures.append(new_future)
 
         # 等待所有文件上传完毕
         self.file_queue.join()
