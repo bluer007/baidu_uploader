@@ -72,6 +72,8 @@ class BaiduUploader():
     pcs = None  # 百度网盘上下文
     config = None  # 配置实例
     file_queue = None  # 待上传文件的队列
+    futures = []  # 记录所有的future的数组
+    retry_map = {}  # 记录所有的错误重试记录
 
     def login(self, config):
         self.pcs = PCS(config.username, config.password)
@@ -85,8 +87,6 @@ class BaiduUploader():
         self.validity_check(self.config)
 
         all_files_full_path = self.list_all_files_full_path(self.config.local_upload_path)
-        futures = []
-        retry_map = {}
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(self.config.max_uploader, 'uploader')
         for file_full_path in all_files_full_path:
             remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
@@ -98,26 +98,13 @@ class BaiduUploader():
                 remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                     self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
                 future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
-                if (len(future._done_callbacks) == 0):
-                    future.add_done_callback(self.done_uploader_callback)
-                futures.append(future)
-            while futures:
-                for future in concurrent.futures.as_completed(futures):
-                    futures.remove(future)
-                    err = future.exception()
-                    result = future.result()
-                    if (result.success != True or err is not None):
-                        upload_config = result.data
-                        retry_key = "%s %s" % (upload_config.remote_dst_dir, upload_config.file_full_path)
-                        error_count = retry_map.get(retry_key, 0)
-                        if (error_count < self.config.retry_times):
-                            retry_map[retry_key] = error_count + 1
-                            # 如果上传出错则重新入队待上传文件队列(错误重试)
-                            self.file_queue.put(upload_config)
-                            new_future = executor.submit(self.smart_upload, upload_config.file_full_path,
-                                                         upload_config.remote_dst_dir)
-                            new_future.add_done_callback(self.done_uploader_callback)
-                            futures.append(new_future)
+                self.futures.append(future)
+            # 必须写在executor生效的上下文中
+            while self.futures:
+                # 如果上传完成
+                for future in concurrent.futures.as_completed(self.futures):
+                    self.futures.remove(future)
+                    self.done_uploader(future, executor)
 
         # 等待所有文件上传完毕
         self.file_queue.join()
@@ -247,6 +234,7 @@ class BaiduUploader():
     # 把file_full_path文件上传到网盘target_dir目录
     def smart_upload(self, file_full_path, target_dir):
         try:
+            # 维护待上传文件队列准确, 手工get
             upload_config = self.file_queue.get()
             print('%s | start upload, and %d files left ...\n' % (file_full_path, self.file_queue.qsize()))
             LARGE_FILE_SIZE = 1024 * 1024 * 1024 * 2  # 百度网盘中大于2G的文件需要分片上传
@@ -267,16 +255,34 @@ class BaiduUploader():
                           message='smart_upload unknown error, file_full_path: %s' % file_full_path)
 
     # 上传线程完成执行后的回调
-    def done_uploader_callback(self, future):
+    def done_uploader(self, future, executor):
+        err = future.exception()
         result = future.result()
+        # 上传成功记录日志
         if (result.success == True):
             if (success_log_file != ''):
                 with open(success_log_file, 'a+') as f:
                     f.write(result.message + '\n')
-        else:
-            print (result.message + '. done_uploader_callback error: %s\n' % result.error)
-            with open(error_log_file, 'a+') as f:
-                f.write(result.message + '. error: %s\n' % result.error)
+            return
+        # 上传失败则错误重试和打印日志
+        if (result.success != True or err is not None):
+            upload_config = result.data
+            retry_key = "%s %s" % (upload_config.remote_dst_dir, upload_config.file_full_path)
+            error_count = self.retry_map.get(retry_key, 0)
+            print (result.message + '. and %d files left; retry %d; done_uploader error: %s\n' % (
+                self.file_queue.qsize(), error_count, result.error))
+            if (error_count < self.config.retry_times):
+                # 进行错误重试
+                self.retry_map[retry_key] = error_count + 1
+                self.file_queue.put(upload_config)
+                new_future = executor.submit(self.smart_upload, upload_config.file_full_path,
+                                             upload_config.remote_dst_dir)
+                self.futures.append(new_future)
+            else:
+                # 重试次数用完则打印日志
+                with open(error_log_file, 'a+') as f:
+                    f.write(
+                        result.message + '. and %d files left. error: %s\n' % (self.file_queue.qsize(), result.error))
 
 
 def to_unicode(str_or_unicode, encode):
