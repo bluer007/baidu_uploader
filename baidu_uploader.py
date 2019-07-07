@@ -10,6 +10,8 @@ from Queue import Queue
 import concurrent.futures
 import progressbar
 import ConfigParser
+import shelve
+import zlib
 from baidupcsapi import PCS
 
 reload(sys)
@@ -58,6 +60,9 @@ class Config():
         self.bar_update_interval = cf.getint(section, 'bar_update_interval') or 5
         # 错误重试次数
         self.retry_times = cf.getint(section, 'retry_times') or 2
+        # 本地缓存文件(记录上传成功文件的路径, 不填表示不使用缓存)
+        # 上传文件时优先检测本地缓存, 若本地文件路径和远程上传目录完全一致则不上传)
+        self.cache_file = unicode(cf.get(section, 'cache_file') or '', 'utf-8')
 
 
 # 记录文件上传的参数类
@@ -74,9 +79,26 @@ class BaiduUploader():
     file_queue = None  # 待上传文件的队列
     futures = []  # 记录所有的future的数组
     retry_map = {}  # 记录所有的错误重试记录
+    cache = None  # 本地缓存实例
 
     def login(self, config):
         self.pcs = PCS(config.username, config.password)
+
+    def init_cache(self):
+        if (self.config.cache_file != ''):
+            self.cache = Cache(self.config.cache_file, self.config.username)
+
+    def has_cache(self, file_full_path, remote_dst_dir):
+        if (self.cache != None):
+            return self.cache.has_key(file_full_path, remote_dst_dir)
+        else:
+            return False
+
+    def set_cache(self, file_full_path, remote_dst_dir):
+        if (self.cache != None):
+            return self.cache.set_if_not_exist(file_full_path, remote_dst_dir)
+        else:
+            return True
 
     def start_upload(self):
         self.file_queue = Queue()
@@ -85,20 +107,24 @@ class BaiduUploader():
         self.login(self.config)
         # 配置合法性判断
         self.validity_check(self.config)
+        # 初始化缓存
+        self.init_cache()
 
         all_files_full_path = self.list_all_files_full_path(self.config.local_upload_path)
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(self.config.max_uploader, 'uploader')
         for file_full_path in all_files_full_path:
             remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                 self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
-            # 待上传文件入队列
-            self.file_queue.put(UploadConfig(file_full_path, remote_dst_dir))
+            if (self.has_cache(file_full_path, remote_dst_dir) == False):
+                # 若不命中本地缓存, 则待上传文件入队列
+                self.file_queue.put(UploadConfig(file_full_path, remote_dst_dir))
         with self.thread_pool as executor:
             for file_full_path in all_files_full_path:
                 remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                     self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
-                future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
-                self.futures.append(future)
+                if (self.has_cache(file_full_path, remote_dst_dir) == False):
+                    future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
+                    self.futures.append(future)
             # 必须写在executor生效的上下文中
             while self.futures:
                 # 如果上传完成
@@ -258,16 +284,17 @@ class BaiduUploader():
     def done_uploader(self, future, executor):
         err = future.exception()
         result = future.result()
-        # 上传成功记录日志
+        upload_config = result.data
+        # 上传成功记录日志和成功缓存
         if (result.success == True):
+            self.cache.set_if_not_exist(upload_config.file_full_path, upload_config.remote_dst_dir)
             if (success_log_file != ''):
                 with open(success_log_file, 'a+') as f:
                     f.write(result.message + '\n')
             return
         # 上传失败则错误重试和打印日志
         if (result.success != True or err is not None):
-            upload_config = result.data
-            retry_key = "%s %s" % (upload_config.remote_dst_dir, upload_config.file_full_path)
+            retry_key = "%s %s" % (upload_config.file_full_path, upload_config.remote_dst_dir)
             error_count = self.retry_map.get(retry_key, 0)
             print (result.message + '. and %d files left; retry %d; done_uploader error: %s\n' % (
                 self.file_queue.qsize(), error_count, result.error))
@@ -297,6 +324,53 @@ def my_raw_input(unicode_prompt=''):
     encode = 'gbk' if sys.platform.startswith('win') else 'utf-8'
     str = raw_input(unicode_prompt.encode(encode))
     return to_unicode(str, encode)
+
+
+# 本地缓存类
+# 上传文件时优先检测本地缓存, 若本地文件路径和远程上传目录完全一致则不上传)
+class Cache():
+    fcache = None  # 缓存文件句柄
+    username = ''  # 百度帐号用户名
+    user_dict = {}  # 该用户下的成功缓存
+    sync_interval = 80  # 同步缓存到硬盘的间隔次数
+
+    def __init__(self, cache_file, username):
+        try:
+            self.fcache = shelve.open(cache_file)
+        except:
+            os.remove(cache_file)
+            self.fcache = shelve.open(cache_file)
+        self.username = username
+        self.init_username_key()
+
+    def init_username_key(self):
+        # 初始化用户名的key
+        if (self.fcache.has_key(self.username) == False):
+            self.fcache[self.username] = {}
+            self.fcache.sync()
+        self.user_dict = self.fcache[self.username]
+
+    def create_key(self, file_full_path, remote_dst_dir):
+        # 使用crc算法加密缓存key, 且使用如下key减少碰撞可能性
+        key = '%s %s %s %s %s' % (file_full_path, remote_dst_dir, self.username, file_full_path, remote_dst_dir)
+        return zlib.crc32(key)
+
+    def set_if_not_exist(self, file_full_path, remote_dst_dir):
+        if (self.has_key(file_full_path, remote_dst_dir) == False):
+            self.user_dict[self.create_key(file_full_path, remote_dst_dir)] = True
+            if (self.sync_interval <= 0):
+                self.fcache[self.username] = self.user_dict
+                self.fcache.sync()
+                self.sync_interval = 80  # 同步缓存到硬盘的间隔次数
+            self.sync_interval = self.sync_interval - 1
+        return True
+
+    def has_key(self, file_full_path, remote_dst_dir):
+        return self.user_dict.has_key(self.create_key(file_full_path, remote_dst_dir))
+
+    def __del__(self):
+        self.fcache[self.username] = self.user_dict
+        self.fcache.close()
 
 
 # 进度条类

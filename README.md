@@ -8,10 +8,10 @@
 ## Install 
 1. pip install futures progressbar baidupcsapi
 
-## run 
+## Run 
 1. config your username, password in `config.txt`
 2. bash: `python baidu_uploader.py`
 3. enjoy it
 
-## thanks
+## Thanks
 `baidupcsapi` project ([https://github.com/ly0/baidupcsapi](https://github.com/ly0/baidupcsapi))
