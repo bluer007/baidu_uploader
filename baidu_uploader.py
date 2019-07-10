@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
+import ConfigParser
 import getpass
 import json
 import os
+import shelve
 import shutil
 import sys
 import tempfile
 import time
+import zlib
 from Queue import Queue
+
 import concurrent.futures
 import progressbar
-import ConfigParser
-import shelve
-import zlib
+import urllib3
 from baidupcsapi import PCS
 
 reload(sys)
@@ -112,6 +114,7 @@ class BaiduUploader():
 
         all_files_full_path = self.list_all_files_full_path(self.config.local_upload_path)
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(self.config.max_uploader, 'uploader')
+        connection_mgr = urllib3.PoolManager(maxsize=self.config.max_uploader)
         for file_full_path in all_files_full_path:
             remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                 self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
@@ -123,7 +126,8 @@ class BaiduUploader():
                 remote_dst_dir = self.config.remote_dir + os.path.dirname(file_full_path).replace(
                     self.config.local_root_dir, '', 1)  # 该文件在网盘中的最终目录
                 if (self.has_cache(file_full_path, remote_dst_dir) == False):
-                    future = executor.submit(self.smart_upload, file_full_path, remote_dst_dir)
+                    future = executor.submit(self.smart_upload, UploadConfig(file_full_path, remote_dst_dir),
+                                             connection_mgr)
                     self.futures.append(future)
             # 必须写在executor生效的上下文中
             while self.futures:
@@ -258,8 +262,10 @@ class BaiduUploader():
 
     # 智能上传文件, 会根据文件智能选择极速上传/普通上传/分片上传
     # 把file_full_path文件上传到网盘target_dir目录
-    def smart_upload(self, file_full_path, target_dir):
+    def smart_upload(self, uploadConfig):
         try:
+            file_full_path = uploadConfig.file_full_path
+            target_dir = uploadConfig.remote_dst_dir
             # 维护待上传文件队列准确, 手工get
             upload_config = self.file_queue.get()
             print('%s | start upload, and %d files left ...\n' % (file_full_path, self.file_queue.qsize()))
